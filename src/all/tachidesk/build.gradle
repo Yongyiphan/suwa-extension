@@ -4,19 +4,19 @@ apply plugin: 'kotlinx-serialization'
 apply plugin: 'com.apollographql.apollo3'
 
 ext {
-    extName = 'Suwayomi'
-    pkgNameSuffix = 'all.tachidesk'
+    extName = 'Suwa Server'
+    pkgNameSuffix = 'all.suwa'
     extClass = '.Tachidesk'
-    extVersionCode = 29
+    extVersionCode = 32
 }
 
 apply from: "$rootDir/common.gradle"
 
 apollo {
     service("service") {
-        packageName.set("eu.kanade.tachiyomi.extension.all.tachidesk.apollo")
+        packageName.set("eu.kanade.tachiyomi.extension.all.suwa.apollo")
         srcDir("graphql")
-        mapScalar("LongString","kotlin.Long", "eu.kanade.tachiyomi.extension.all.tachidesk.LongStringScalar")
+        mapScalar("LongString","kotlin.Long", "eu.kanade.tachiyomi.extension.all.suwa.LongStringScalar")
 
         introspection {
             endpointUrl.set("http://localhost:4567/api/graphql")

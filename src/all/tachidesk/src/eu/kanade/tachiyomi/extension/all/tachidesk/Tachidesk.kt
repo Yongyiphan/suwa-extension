@@ -1,4 +1,4 @@
-package eu.kanade.tachiyomi.extension.all.tachidesk
+package eu.kanade.tachiyomi.extension.all.suwa
 
 import android.app.Application
 import android.content.SharedPreferences
@@ -12,20 +12,20 @@ import androidx.preference.PreferenceScreen
 import com.apollographql.apollo3.ApolloClient
 import com.apollographql.apollo3.api.Optional
 import com.apollographql.apollo3.network.okHttpClient
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.GetCategoriesQuery
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.GetChapterIdQuery
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.GetChaptersDataQuery
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.GetMangaAndChaptersMutation
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.GetMangaDataQuery
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.GetPagesMutation
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.SearchMangaQuery
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.fragment.CategoryFragment
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.fragment.ChapterFragment
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.fragment.MangaFragment
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.type.IntFilterInput
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.type.MangaFilterInput
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.type.MangaStatus
-import eu.kanade.tachiyomi.extension.all.tachidesk.apollo.type.StringFilterInput
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.GetCategoriesQuery
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.GetChapterIdQuery
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.GetChaptersDataQuery
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.GetMangaAndChaptersMutation
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.GetMangaDataQuery
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.GetPagesMutation
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.SearchMangaQuery
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.fragment.CategoryFragment
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.fragment.ChapterFragment
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.fragment.MangaFragment
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.type.IntFilterInput
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.type.MangaFilterInput
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.type.MangaStatus
+import eu.kanade.tachiyomi.extension.all.suwa.apollo.type.StringFilterInput
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.UnmeteredSource
@@ -52,10 +52,13 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
+import kotlinx.serialization.serializer
 import okhttp3.Dns
 import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -70,7 +73,7 @@ import kotlin.math.min
 
 class Tachidesk : ConfigurableSource, UnmeteredSource, HttpSource() {
     override val name = "Suwayomi"
-    override val id = 3100117499901280806L
+    override val id = 3100117499901280817L
 
     private val json: Json by lazy { Json { ignoreUnknownKeys = true } }
 
@@ -139,6 +142,9 @@ class Tachidesk : ConfigurableSource, UnmeteredSource, HttpSource() {
             .associate { it[0].trim() to it[1].trim() }
     }
 
+    @Volatile
+    private var suwaSourceId: String? = null
+
     override val lang = "all"
     override val supportsLatest = true
 
@@ -180,7 +186,7 @@ class Tachidesk : ConfigurableSource, UnmeteredSource, HttpSource() {
         throw Exception("Not used")
 
     override fun fetchPopularManga(page: Int): Observable<MangasPage> {
-        return fetchSearchManga(page, "", FilterList())
+        return fetchServerSourcePage("popular", page)
     }
 
     // ------------- Latest Manga -------------
@@ -192,11 +198,7 @@ class Tachidesk : ConfigurableSource, UnmeteredSource, HttpSource() {
         throw Exception("Not used")
 
     override fun fetchLatestUpdates(page: Int): Observable<MangasPage> {
-        return fetchSearchManga(
-            page,
-            "",
-            FilterList(SortBy(sortByOptions).apply { state = Selection(3, false) }),
-        )
+        return fetchServerSourcePage("latest", page)
     }
 
     // ------------- Manga Details -------------
@@ -231,7 +233,7 @@ class Tachidesk : ConfigurableSource, UnmeteredSource, HttpSource() {
                         GetMangaAndChaptersMutation(
                             manga.url.toInt(),
                             fetchManga = true,
-                            fetchChapters = false
+                            fetchChapters = false,
                         ),
                     )
                     .toFlow()
@@ -307,7 +309,7 @@ class Tachidesk : ConfigurableSource, UnmeteredSource, HttpSource() {
                         GetMangaAndChaptersMutation(
                             manga.url.toInt(),
                             fetchManga = false,
-                            fetchChapters = true
+                            fetchChapters = true,
                         ),
                     )
                     .toFlow()
@@ -530,6 +532,9 @@ class Tachidesk : ConfigurableSource, UnmeteredSource, HttpSource() {
         query: String,
         filters: FilterList,
     ): Observable<MangasPage> {
+        if (query.isNotBlank()) {
+            return fetchServerSourceSearch(page, query)
+        }
         return runCatching {
             // Embed search query and scope into URL params for processing in searchMangaParse
             var currentCategoryId = defaultCategoryId
@@ -737,6 +742,104 @@ class Tachidesk : ConfigurableSource, UnmeteredSource, HttpSource() {
                 .asObservable()
         }.getOrElse {
             Observable.error(it)
+        }
+    }
+
+    // ------------- Server-side Suwa discovery ------------
+
+    /**
+     * The official Suwayomi source exposes the server library by default. That is
+     * useful for reading, but it hides the Suwa aggregator's source discovery.
+     * These calls deliberately use Suwayomi's source API so Mihon browses the
+     * server-side Suwa aggregation while all manga/chapter state remains on the PC.
+     */
+    private fun fetchServerSourcePage(kind: String, page: Int): Observable<MangasPage> =
+        Observable.fromCallable {
+            val sourceId = resolveSuwaSourceId()
+            val payload = getServerJson<PagedServerManga>(
+                "$checkedBaseUrl/api/v1/source/$sourceId/$kind/$page",
+            )
+            MangasPage(payload.mangaList.map { it.toSManga(checkedBaseUrl) }, payload.hasNextPage)
+        }
+
+    private fun fetchServerSourceSearch(page: Int, query: String): Observable<MangasPage> =
+        Observable.fromCallable {
+            val sourceId = resolveSuwaSourceId()
+            val url = "$checkedBaseUrl/api/v1/source/$sourceId/search".toHttpUrl().newBuilder()
+                .addQueryParameter("searchTerm", query)
+                .addQueryParameter("pageNum", page.toString())
+                .build()
+            val payload = getServerJson<PagedServerManga>(url.toString())
+            MangasPage(payload.mangaList.map { it.toSManga(checkedBaseUrl) }, payload.hasNextPage)
+        }
+
+    private fun resolveSuwaSourceId(): String {
+        suwaSourceId?.let { return it }
+        val sources = getServerJson<List<ServerSource>>("$checkedBaseUrl/api/v1/source/list")
+        val source = sources.firstOrNull {
+            it.name.equals("Suwa", ignoreCase = true) ||
+                it.displayName.startsWith("Suwa", ignoreCase = true)
+        } ?: error("Suwa aggregator source is not installed on the Suwayomi server")
+        return source.id.also { suwaSourceId = it }
+    }
+
+    private inline fun <reified T> getServerJson(url: String): T {
+        val request = Request.Builder()
+            .url(url)
+            .headers(headersBuilder().build())
+            .header("User-Agent", "Mihon")
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("Suwayomi API ${response.code} for ${request.url.encodedPath}")
+            }
+            return json.decodeFromString(serializer(), response.body.string())
+        }
+    }
+
+    @Serializable
+    private data class ServerSource(
+        val id: String,
+        val name: String = "",
+        val displayName: String = "",
+    )
+
+    @Serializable
+    private data class PagedServerManga(
+        val mangaList: List<ServerManga> = emptyList(),
+        val hasNextPage: Boolean = false,
+    )
+
+    @Serializable
+    private data class ServerManga(
+        val id: Int,
+        val title: String,
+        val thumbnailUrl: String? = null,
+        val artist: String? = null,
+        val author: String? = null,
+        val description: String? = null,
+        val genre: List<String> = emptyList(),
+        val status: String = "UNKNOWN",
+        val realUrl: String? = null,
+    ) {
+        fun toSManga(baseUrl: String) = SManga.create().also {
+            it.url = id.toString()
+            it.title = title
+            it.thumbnail_url = thumbnailUrl?.let { path -> if (path.startsWith("http")) path else baseUrl + path }
+            it.artist = artist
+            it.author = author
+            it.description = description
+            it.genre = genre.joinToString(", ")
+            it.status = when (status) {
+                "ONGOING" -> SManga.ONGOING
+                "COMPLETED" -> SManga.COMPLETED
+                "LICENSED" -> SManga.LICENSED
+                "PUBLISHING_FINISHED" -> SManga.PUBLISHING_FINISHED
+                "CANCELLED" -> SManga.CANCELLED
+                "ON_HIATUS" -> SManga.ON_HIATUS
+                else -> SManga.UNKNOWN
+            }
         }
     }
 
